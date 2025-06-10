@@ -9,16 +9,25 @@ from openpyxl import load_workbook
 import yaml
 from settings import file, anotherFile, q, a, open_llm_script_template, focus_resize_script_template, copy_visible_text_script_template
 from types import SimpleNamespace
+from openpyxl.utils.exceptions import InvalidFileException
+from zipfile import BadZipFile
 
 def to_namespace(d): return SimpleNamespace(**{k: to_namespace(v) if isinstance(v, dict) else v for k, v in d.items()})
 with open(file, "r") as f: raw_config = yaml.safe_load(f)
 def copy_securely(text): subprocess.run("pbcopy", text=True, input=text)
     
+def clickFunction(coordinates, tiempo):
+    pyautogui.click(coordinates)
+    time.sleep(tiempo)
+    pyautogui.click(coordinates)
+    time.sleep(tiempo)
+
 config = to_namespace(raw_config)
 click_coords = tuple(config.click_coords)
 response_file_path = config.response_file_path
 custom_delimiter = config.custom_delimiter
 excel_file = config.excel_file
+fallback_txt_file = config.fallback_txt_file
 refresh_config = config.refresh_chat
 llm = config.llm
 browser_name = config.browser.name
@@ -27,21 +36,19 @@ llm_url = llm.url
 copy_securely("")
 
 def refresh_and_restart_chat():
-    pyautogui.hotkey(*refresh_config.reload_hotkey)
+    pyautogui.hotkey(refresh_config.reload_hotkey)
     time.sleep(4)
 
-    pyautogui.click(*refresh_config.click_reload_coords)
-    time.sleep(0.5)
+    clickFunction(refresh_config.click_reload_coords, config.keyboard_delays.before_copy_click_wait)
 
     for _ in range(refresh_config.chatbox_tab_count_before_new_chat):
         pyautogui.press('tab')
-        time.sleep(0.1)
+        time.sleep(1)
 
     pyautogui.press('return')
     time.sleep(1.5)
 
-    pyautogui.click(*refresh_config.new_chat_click_coords)
-    time.sleep(0.5)
+    clickFunction(refresh_config.new_chat_click_coords, config.keyboard_delays.before_copy_click_wait)
 
     pyautogui.press('down', presses=refresh_config.down_presses, interval=0.2)
     pyautogui.press('return')
@@ -50,9 +57,8 @@ def refresh_and_restart_chat():
     pyautogui.press('tab')
     pyautogui.press('return')
     time.sleep(1)
-
-    pyautogui.click(*refresh_config.click_reload_coords)
-    time.sleep(0.5)
+    
+    clickFunction(refresh_config.click_reload_coords, config.keyboard_delays.before_copy_click_wait)
 
     for _ in range(refresh_config.final_tab_count_to_focus_input):
         pyautogui.press('tab')
@@ -95,8 +101,7 @@ def focus_and_resize_window():
 def copy_visible_text():
     focus_and_resize_window()
     time.sleep(config.keyboard_delays.before_copy_click_wait)
-
-    pyautogui.click(*click_coords)
+    clickFunction(click_coords, config.keyboard_delays.before_copy_click_wait)
 
     applescript = copy_visible_text_script_template.format(
         copy_delay=config.keyboard_delays.copy_delay
@@ -124,7 +129,8 @@ def type_into_chatbox(text):
     full_message = prompt_header + text
 
     # Save the full message to a file
-    with open(anotherFile, "w", encoding="utf-8") as f:
+    with open(anotherFile,"w", encoding="utf-8") as f:
+        print(full_message)
         f.write(full_message)
 
     # Copy to clipboard
@@ -226,7 +232,7 @@ if wait_for_llm_ui():
             if idx > 0:
                 refresh_and_restart_chat()
                 time.sleep(1)
-                pyautogui.click(*click_coords)
+                clickFunction(click_coords, config.keyboard_delays.before_copy_click_wait)
                 pyautogui.press('tab')
 
             print(f"📤 Sending section {idx + 1}...")
@@ -265,18 +271,29 @@ if wait_for_llm_ui():
 
         df_new = pd.DataFrame({'Question': q_list, 'Answer': a_list})
 
-        if os.path.exists(excel_file):
-            book = load_workbook(excel_file)
-            sheet = book.active
-            start_row = sheet.max_row
+        try:
+            if os.path.exists(excel_file):
+                try:
+                    book = load_workbook(excel_file)
+                    sheet = book.active
+                    start_row = sheet.max_row
 
-            with pd.ExcelWriter(excel_file, engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
-                df_new.to_excel(writer, index=False, header=False, startrow=start_row)
+                    with pd.ExcelWriter(excel_file, engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
+                        df_new.to_excel(writer, index=False, header=False, startrow=start_row)
 
-            print(f"📎 Appended {len(df_new)} flashcards to '{excel_file}'")
-        else:
-            df_new.to_excel(excel_file, index=False)
-            print(f"📁 Created new Excel file and exported {len(df_new)} flashcards to '{excel_file}'")
+                    print(f"📎 Appended {len(df_new)} flashcards to '{excel_file}'")
+
+                except (BadZipFile, InvalidFileException):
+                    print(f"❌ '{excel_file}' is not a valid Excel (.xlsx) file.")
+                    print(f"💾 Saving data instead as a tab-separated text file: '{fallback_txt_file}'")
+                    df_new.to_csv(fallback_txt_file, index=False, sep='\t')
+                    print("✅ You can open the text file and copy/paste the content directly into Excel.")
+            else:
+                df_new.to_excel(excel_file, index=False, engine='openpyxl')
+                print(f"📁 Created new Excel file and exported {len(df_new)} flashcards to '{excel_file}'")
+
+        except Exception as e:
+            print(f"🚨 Unexpected error: {e}")
     else:
         print("⚠️ Could not retrieve note content.")
 
